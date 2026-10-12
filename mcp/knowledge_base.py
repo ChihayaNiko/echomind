@@ -76,6 +76,59 @@ class KnowledgeBase:
         """异步导入文档；ChromaDB 客户端为同步实现，因此放入线程池执行。"""
         return await asyncio.to_thread(self.add_documents, documents)
 
+    def search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        语义检索：根据 query 返回最相关的文档片段。
+
+        ChromaDB 内部自动将 query 转为向量，与存储的文档向量做余弦相似度匹配。
+        """
+        results = self._collection.query(
+            query_texts=[query],
+            n_results=top_k,
+        )
+
+        items = []
+        if results["documents"] and results["documents"][0]:
+            for doc, meta, dist in zip(
+                results["documents"][0],
+                results["metadatas"][0],
+                results["distances"][0],
+            ):
+                items.append({
+                    "title":    meta.get("title", ""),
+                    "content":  doc,
+                    "score":    round(1.0 - dist, 4),  # ChromaDB 返回距离，转为相似度
+                    "chunk":    meta.get("chunk_index", 0),
+                })
+
+        return items
+
+    async def search_async(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """异步检索；ChromaDB 客户端为同步实现，因此放入线程池执行。"""
+        return await asyncio.to_thread(self.search, query, top_k)
+
+    @property
+    def doc_count(self) -> int:
+        return self._collection.count()
+
+    async def doc_count_async(self) -> int:
+        """异步获取文档片段数量。"""
+        return await asyncio.to_thread(self._collection.count)
+
+    async def search_handler(self, params: Dict[str, Any], context: Any) -> List[Dict]:
+        """
+        作为 MCP 工具的 handler 注册。
+
+        MCPToolManager.register(Tool(
+            name="knowledge_search",
+            handler=kb.search_handler,
+            ...
+        ))
+        """
+        query = params.get("query", "")
+        top_k = params.get("top_k", 5)
+        return await self.search_async(query, top_k=top_k)
+
     def _chunk_text(self, text: str, chunk_size: int = 500) -> List[str]:
         """将长文本按 chunk_size 切片，保留语义完整性（按句号/换行切分）。"""
         if len(text) <= chunk_size:
